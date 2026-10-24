@@ -69,6 +69,7 @@ jobs:
           if [[ "${GOOS}" == "windows" ]]; then executable="weread-cli.exe"; fi
           go build -trimpath -ldflags "-s -w -X main.version=${GITHUB_REF_NAME}" -o "${work_dir}/${package}/${executable}" ./cmd/weread-cli
           cp README.md LICENSE "${work_dir}/${package}/"
+          cp -R docs "${work_dir}/${package}/"
           if [[ "${ARCHIVE}" == "zip" ]]; then
             (cd "${work_dir}" && zip -q -r "${GITHUB_WORKSPACE}/dist/${package}.zip" "${package}")
           else
@@ -100,6 +101,7 @@ jobs:
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
             gh release upload "${GITHUB_REF_NAME}" dist/* --clobber
