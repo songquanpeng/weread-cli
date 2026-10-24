@@ -1,0 +1,108 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "*"
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Test
+        run: go test -race ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Check for secrets
+        run: python3 scripts/check-secrets.py
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - { goos: linux, goarch: amd64, archive: tar.gz }
+          - { goos: linux, goarch: arm64, archive: tar.gz }
+          - { goos: darwin, goarch: amd64, archive: tar.gz }
+          - { goos: darwin, goarch: arm64, archive: tar.gz }
+          - { goos: windows, goarch: amd64, archive: zip }
+          - { goos: windows, goarch: arm64, archive: zip }
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build release archive
+        env:
+          GOOS: ${{ matrix.target.goos }}
+          GOARCH: ${{ matrix.target.goarch }}
+          CGO_ENABLED: "0"
+          ARCHIVE: ${{ matrix.target.archive }}
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME//\//-}"
+          package="weread-cli_${version}_${GOOS}_${GOARCH}"
+          work_dir="$(mktemp -d)"
+          mkdir -p "dist" "${work_dir}/${package}"
+          executable="weread-cli"
+          if [[ "${GOOS}" == "windows" ]]; then executable="weread-cli.exe"; fi
+          go build -trimpath -ldflags "-s -w -X main.version=${GITHUB_REF_NAME}" -o "${work_dir}/${package}/${executable}" ./cmd/weread-cli
+          cp README.md LICENSE "${work_dir}/${package}/"
+          if [[ "${ARCHIVE}" == "zip" ]]; then
+            (cd "${work_dir}" && zip -q -r "${GITHUB_WORKSPACE}/dist/${package}.zip" "${package}")
+          else
+            tar -C "${work_dir}" -czf "dist/${package}.tar.gz" "${package}"
+          fi
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: weread-cli-${{ matrix.target.goos }}-${{ matrix.target.goarch }}
+          path: dist/weread-cli_*
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Generate checksums
+        run: |
+          cd dist
+          sha256sum weread-cli_* > checksums.txt
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            gh release upload "${GITHUB_REF_NAME}" dist/* --clobber
+          else
+            gh release create "${GITHUB_REF_NAME}" dist/* --generate-notes --title "${GITHUB_REF_NAME}"
+          fi
