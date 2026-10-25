@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-func TestCredentialsPermissionsAndEnvPrecedence(t *testing.T) {
+func TestCredentialsPermissionsAndSavedKeyPrecedence(t *testing.T) {
 	c, e := Load(t.TempDir(), "")
 	if e != nil {
 		t.Fatal(e)
@@ -33,10 +33,17 @@ func TestCredentialsPermissionsAndEnvPrecedence(t *testing.T) {
 	}
 	t.Setenv("WEREAD_API_KEY", "env-key")
 	key, source, e = c.Key()
-	if e != nil || key != "env-key" || source != "environment" {
-		t.Fatal("environment did not take precedence")
+	if e != nil || key != "test-secret" || source != "file" {
+		t.Fatal("saved key did not take precedence")
 	}
 	if e = c.SaveKey("key\nother"); e == nil {
 		t.Fatal("multiline secret accepted")
+	}
+	if e = os.Remove(c.AuthPath()); e != nil {
+		t.Fatal(e)
+	}
+	key, source, e = c.Key()
+	if e != nil || key != "env-key" || source != "environment" {
+		t.Fatal("environment fallback missing")
 	}
 }

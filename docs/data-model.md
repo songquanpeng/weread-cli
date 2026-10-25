@@ -1,6 +1,6 @@
 # 本地数据与分析
 
-通过 `weread-cli status --json` 获取数据库的绝对路径，推荐用只读模式打开。先运行 `weread-cli sync` 获取最新数据。表结构版本使用 `PRAGMA user_version`，当前为 1。
+通过 `weread-cli status --offline --json` 获取数据库的绝对路径，推荐用只读模式打开。不加 `--offline` 时，`status` 还会联网验证登录态和检查 CLI 更新。先运行 `weread-cli sync` 获取最新数据。表结构版本使用 `PRAGMA user_version`，当前为 1。
 
 | 表 | 内容 |
 | --- | --- |

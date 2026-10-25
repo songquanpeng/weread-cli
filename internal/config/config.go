@@ -3,13 +3,14 @@ package config
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 )
 
 type Config struct{ Home, DB string }
+
+var ErrInvalidCredentials = errors.New("invalid auth.json; run weread-cli login")
 
 func Load(home, db string) (Config, error) {
 	if home == "" {
@@ -48,23 +49,28 @@ func (c Config) Ensure() error {
 func (c Config) AuthPath() string { return filepath.Join(c.Home, "auth.json") }
 
 func (c Config) Key() (string, string, error) {
+	b, err := os.ReadFile(c.AuthPath())
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return "", "", err
+	}
+	if err == nil {
+		var v struct {
+			Key string `json:"api_key"`
+		}
+		if json.Unmarshal(b, &v) != nil {
+			return "", "", ErrInvalidCredentials
+		}
+		if key := strings.TrimSpace(v.Key); key != "" {
+			if strings.ContainsAny(key, "\r\n\t ") {
+				return "", "", ErrInvalidCredentials
+			}
+			return key, "file", nil
+		}
+	}
 	if key := strings.TrimSpace(os.Getenv("WEREAD_API_KEY")); key != "" {
 		return key, "environment", nil
 	}
-	b, err := os.ReadFile(c.AuthPath())
-	if errors.Is(err, os.ErrNotExist) {
-		return "", "none", nil
-	}
-	if err != nil {
-		return "", "", err
-	}
-	var v struct {
-		Key string `json:"api_key"`
-	}
-	if err := json.Unmarshal(b, &v); err != nil {
-		return "", "", fmt.Errorf("invalid auth.json; run weread-cli login --key-stdin")
-	}
-	return strings.TrimSpace(v.Key), "file", nil
+	return "", "none", nil
 }
 
 func (c Config) SaveKey(key string) error {

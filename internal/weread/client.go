@@ -41,6 +41,16 @@ type Client struct {
 
 type UpgradeError struct{ Message string }
 
+// AuthenticationError distinguishes rejected keys from network/service failures.
+type AuthenticationError struct {
+	API        string
+	StatusCode int
+}
+
+func (e *AuthenticationError) Error() string {
+	return fmt.Sprintf("%s: authentication rejected (HTTP %d); run weread-cli login to replace your API key", e.API, e.StatusCode)
+}
+
 func (e *UpgradeError) Error() string {
 	return "official skill upgrade required; update weread-cli before syncing: " + e.Message
 }
@@ -57,7 +67,7 @@ func New(endpoint, key string) (*Client, error) {
 		return nil, errors.New("gateway must use HTTPS (HTTP allowed only on loopback for tests)")
 	}
 	if strings.TrimSpace(key) == "" {
-		return nil, errors.New("set WEREAD_API_KEY or run weread-cli login --key-stdin")
+		return nil, errors.New("run weread-cli login to get and save an API key (https://weread.qq.com/r/weread-skills), or set WEREAD_API_KEY")
 	}
 	return &Client{endpoint: endpoint, key: key, Interval: 250 * time.Millisecond, http: &http.Client{
 		Timeout:       45 * time.Second,
@@ -135,7 +145,7 @@ func (c *Client) Call(ctx context.Context, api string, params map[string]any) (j
 		}
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 			if resp.StatusCode == 401 || resp.StatusCode == 403 {
-				return nil, fmt.Errorf("%s: authentication rejected (HTTP %d); check your WeRead API key", api, resp.StatusCode)
+				return nil, &AuthenticationError{API: api, StatusCode: resp.StatusCode}
 			}
 			return nil, fmt.Errorf("%s: gateway HTTP %d", api, resp.StatusCode)
 		}

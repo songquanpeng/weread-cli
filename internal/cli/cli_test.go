@@ -14,6 +14,7 @@ import (
 
 	"github.com/songquanpeng/weread-cli/internal/domain"
 	"github.com/songquanpeng/weread-cli/internal/storage"
+	"github.com/songquanpeng/weread-cli/internal/update"
 )
 
 func cliFixture(t *testing.T) string {
@@ -34,19 +35,21 @@ func cliFixture(t *testing.T) string {
 	t.Setenv("WEREAD_API_KEY", "")
 	t.Setenv("WEREAD_HOME", home)
 	t.Setenv("WEREAD_DB", "")
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	return home
 }
 
 func run(t *testing.T, args ...string) (string, error) {
 	t.Helper()
 	var out, errOut bytes.Buffer
-	e := Execute(context.Background(), "test", args, strings.NewReader(""), &out, &errOut)
+	e := execute(context.Background(), &runtime{version: "v0.2.0", latest: testLatest(t), in: strings.NewReader(""), out: &out, errOut: &errOut}, args)
 	return out.String(), e
 }
 
 func TestOfflineCommandsNeverRequireNetworkOrKey(t *testing.T) {
 	cliFixture(t)
-	for _, args := range [][]string{{"search", "人工智能", "--json"}, {"list", "--json"}, {"get", "highlight:b1:h1", "--json"}, {"books", "--json"}, {"book", "b1", "--json"}, {"stats", "--json"}, {"status", "--json"}, {"export", "--output", "json"}} {
+	for _, args := range [][]string{{"search", "人工智能", "--json"}, {"list", "--json"}, {"get", "highlight:b1:h1", "--json"}, {"books", "--json"}, {"book", "b1", "--json"}, {"stats", "--json"}, {"status", "--offline", "--json"}, {"export", "--output", "json"}} {
 		args = append([]string{"--api-url", "http://127.0.0.1:1"}, args...)
 		out, e := run(t, args...)
 		if e != nil {
@@ -139,7 +142,7 @@ func TestLoginDoesNotExposeKeyAndLogoutKeepsMirror(t *testing.T) {
 	}))
 	defer srv.Close()
 	var out, errOut bytes.Buffer
-	e := Execute(context.Background(), "test", []string{"--api-url", srv.URL, "login", "--key-stdin", "--json"}, strings.NewReader("synthetic-secret\n"), &out, &errOut)
+	e := execute(context.Background(), &runtime{version: "v0.2.0", latest: testLatest(t), in: strings.NewReader("synthetic-secret\n"), out: &out, errOut: &errOut}, []string{"--api-url", srv.URL, "login", "--key-stdin", "--json"})
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -158,6 +161,18 @@ func TestLoginDoesNotExposeKeyAndLogoutKeepsMirror(t *testing.T) {
 	if _, e = run(t, "get", "highlight:b1:h1", "--json"); e != nil {
 		t.Fatal("logout deleted mirror")
 	}
+}
+
+func testLatest(t *testing.T) update.Checker {
+	t.Helper()
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "" {
+			t.Error("release request received credentials")
+		}
+		w.Write([]byte(`{"tag_name":"v0.2.0"}`))
+	}))
+	t.Cleanup(s.Close)
+	return update.Checker{URL: s.URL, HTTP: s.Client()}
 }
 
 func TestRawAPIFlatParams(t *testing.T) {

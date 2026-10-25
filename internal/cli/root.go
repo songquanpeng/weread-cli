@@ -12,11 +12,14 @@ import (
 	"github.com/songquanpeng/weread-cli/internal/config"
 	"github.com/songquanpeng/weread-cli/internal/domain"
 	"github.com/songquanpeng/weread-cli/internal/storage"
+	"github.com/songquanpeng/weread-cli/internal/update"
 	"github.com/songquanpeng/weread-cli/internal/weread"
 	"github.com/spf13/cobra"
 )
 
 type runtime struct {
+	version                              string
+	latest                               update.Checker
 	home, db, endpoint, format, timezone string
 	json                                 bool
 	in                                   io.Reader
@@ -24,8 +27,11 @@ type runtime struct {
 }
 
 func Execute(ctx context.Context, version string, args []string, in io.Reader, out, errOut io.Writer) error {
-	r := &runtime{in: in, out: out, errOut: errOut}
-	root := &cobra.Command{Use: "weread-cli", Short: "Sync and search your WeRead library, offline first", Version: version, SilenceErrors: true, SilenceUsage: true,
+	return execute(ctx, &runtime{version: version, in: in, out: out, errOut: errOut}, args)
+}
+
+func execute(ctx context.Context, r *runtime, args []string) error {
+	root := &cobra.Command{Use: "weread-cli", Short: "Sync and search your WeRead library, offline first", Version: r.version, SilenceErrors: true, SilenceUsage: true,
 		Long: "weread-cli mirrors your WeRead shelf, highlights, personal reviews and reading data into SQLite.\nSearch, list, get, books, stats and export are offline. Run sync for fresh data.\nRemote views use cached data unless --refresh is set. Run agent-guide for scripting guidance.",
 		PersistentPreRunE: func(*cobra.Command, []string) error {
 			if r.format != "text" && r.format != "json" {
@@ -35,9 +41,9 @@ func Execute(ctx context.Context, version string, args []string, in io.Reader, o
 			return err
 		},
 	}
-	root.SetIn(in)
-	root.SetOut(out)
-	root.SetErr(errOut)
+	root.SetIn(r.in)
+	root.SetOut(r.out)
+	root.SetErr(r.errOut)
 	root.SetArgs(args)
 	f := root.PersistentFlags()
 	f.StringVar(&r.home, "home", "", "private state directory (env: WEREAD_HOME)")
@@ -46,7 +52,7 @@ func Execute(ctx context.Context, version string, args []string, in io.Reader, o
 	f.StringVar(&r.format, "format", "text", "output format: text or json")
 	f.BoolVar(&r.json, "json", false, "emit stable machine-readable JSON")
 	f.StringVar(&r.timezone, "timezone", "Asia/Shanghai", "IANA timezone used for dates and reading periods")
-	root.AddCommand(r.login(), r.logout(), r.status(), r.sync(), r.search(false), r.search(true), r.get(), r.books(), r.stats(), r.export(), r.schedule(), r.remote(), r.bookView(), r.shelf(), r.reading(), r.api(), r.agentGuide(), r.update())
+	root.AddCommand(r.login(), r.logout(), r.status(), r.sync(), r.search(false), r.search(true), r.get(), r.books(), r.stats(), r.export(), r.schedule(), r.remote(), r.bookView(), r.shelf(), r.reading(), r.api(), r.agentGuide(), r.update(), r.skills())
 	return root.ExecuteContext(ctx)
 }
 
@@ -81,38 +87,9 @@ func (r *runtime) write(v any) error {
 }
 func (r *runtime) present(v any) error { return r.write(v) }
 
-func (r *runtime) status() *cobra.Command {
-	return &cobra.Command{Use: "status", Short: "Show local authentication and sync status (offline)", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
-		c, e := r.cfg()
-		if e != nil {
-			return e
-		}
-		key, source, e := c.Key()
-		if e != nil {
-			return e
-		}
-		s, e := r.store()
-		if e != nil {
-			return e
-		}
-		defer s.Close()
-		last, e := s.LastSync(cmd.Context())
-		if e != nil {
-			return e
-		}
-		return r.present(struct {
-			Authenticated    bool               `json:"authenticated"`
-			CredentialSource string             `json:"credential_source"`
-			Home             string             `json:"home"`
-			Database         string             `json:"database"`
-			LastSync         *domain.SyncResult `json:"last_sync"`
-		}{key != "", source, c.Home, c.DB, last})
-	}}
-}
-
 func (r *runtime) update() *cobra.Command {
 	return &cobra.Command{Use: "update", Short: "Print the install/update command", Args: cobra.NoArgs, RunE: func(*cobra.Command, []string) error {
-		const command = "go install github.com/songquanpeng/weread-cli/cmd/weread-cli@latest"
+		const command = update.InstallCommand
 		if r.wantsJSON() {
 			return r.write(map[string]string{"command": command})
 		}
@@ -125,7 +102,9 @@ func (r *runtime) agentGuide() *cobra.Command {
 	return &cobra.Command{Use: "agent-guide", Short: "Print concise operating instructions for agents", Args: cobra.NoArgs, RunE: func(*cobra.Command, []string) error {
 		_, e := fmt.Fprintln(r.out, `Agent workflow for weread-cli
 
-1. Freshness: run "weread-cli sync --json" when fresh remote data is required.
+1. Freshness: check "weread-cli status --json" for last_sync. If it is absent, or
+   the user needs current/recent data, run "weread-cli sync --json" BEFORE searching.
+   An unsynced empty index does not mean the user's remote library is empty.
 2. Discovery: "weread-cli search '主题 关键词' --json --limit 50" searches LOCAL notes,
    quotes, book titles, authors and chapter names. Terms use AND; --any uses OR.
 3. Pagination: follow next.command verbatim while has_more is true.
@@ -139,11 +118,17 @@ func (r *runtime) agentGuide() *cobra.Command {
    shelf/reading/book views use the cache by default; --refresh explicitly goes online.
 8. Schedule: "weread-cli schedule install --interval 1h" (macOS/Linux), or
    "weread-cli sync --watch --interval 1h" (foreground, any OS).
-9. Authentication: WEREAD_API_KEY, or pipe a key into "weread-cli login --key-stdin".
+9. Authentication: run "weread-cli login" to validate the current key or paste a new
+   one from https://weread.qq.com/r/weread-skills. Saved keys take precedence over
+   WEREAD_API_KEY. Use "weread-cli login --key-stdin" to explicitly replace a key.
    Never pass keys in argv. logout deletes the saved key; it keeps the local mirror.
 10. Sync skips unchanged notebooks fetched within 24h; --full forces content refresh
     and historical reading refresh. A complete successful sync atomically replaces
     the mirror, including remotely deleted notes. Back up exports to retain history.
+11. Setup: "weread-cli status --json" checks login, CLI updates and companion skills.
+    Follow guidance[].command as needed; update the CLI before "weread-cli skills
+    install" to install matching skills into both ~/.agents/skills and ~/.claude/skills.
+    Use "weread-cli status --offline --json" when operating without network access.
 
 JSON pagination fields: query, total, count, limit, offset, has_more, items, next.
 Note kinds: highlight (划线), review (个人想法/点评). Bookmarks are counts only.

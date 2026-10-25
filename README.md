@@ -16,11 +16,17 @@ go install github.com/songquanpeng/weread-cli/cmd/weread-cli@latest
 
 ## 开始使用
 
-先从 [微信读书 Skills 页面](https://weread.qq.com/r/weread-skills) 获取 API Key，并通过环境变量提供。已有 shell 配置中的 `WEREAD_API_KEY` 可以直接使用。
+运行 `weread-cli login` 即可开始。没有有效登录态时，CLI 会显示 [微信读书 Skills 页面](https://weread.qq.com/r/weread-skills)，提示粘贴 API Key；终端输入不回显，验证成功后才保存。已有登录态会先在线验证，无需重新粘贴。
 
 ```sh
-# 验证环境变量中的 key，保存至本机私有配置，供定时任务使用
+# 检查已有登录态，或按引导获取、粘贴并保存 key
 weread-cli login
+
+# 安装二进制内嵌的配套 skill，无需 npm 或额外下载
+weread-cli skills install
+
+# 检查登录、CLI 最新版本、两处 skill 安装情况及版本匹配
+weread-cli status --json
 
 # 也可从密码管理器等通过 stdin 提供 key，避免出现在命令参数中
 # your-secret-command | weread-cli login --key-stdin
@@ -32,11 +38,42 @@ weread-cli get '<note-id>' --json
 weread-cli stats
 ```
 
-只使用环境变量时不必执行 `login`；CLI 不会自行读取 `.zshrc`。环境变量优先于已保存的 key。`logout` 删除本机保存的 key，保留离线数据；如需停止使用环境变量中的 key，请同时在 shell 中取消该变量。
+**已保存的 key 优先于 `WEREAD_API_KEY`**；没有保存值时才使用环境变量。只使用环境变量时不必执行 `login`；CLI 不会自行读取 `.zshrc`。环境变量中的有效 key 也可通过 `login` 验证并保存。需要主动更换已有 key 时使用 `login --key-stdin`。鉴权失败会引导重新粘贴；网络故障不会被当作 key 过期。无效的新 key 不会覆盖原配置。
+
+`logout` 删除本机保存的 key，保留离线数据；如仍设置环境变量，之后会回退使用它。登录提示写 stderr，JSON 结果写 stdout，成功结果的 `next.command` 提醒下一步运行同步。
+
+## Agent skill 与环境检查
+
+配套 skill 随 CLI 二进制内嵌，可离线安装到两处：
+
+```sh
+weread-cli skills install
+weread-cli skills status --json
+```
+
+- `~/.agents/skills/weread-cli/SKILL.md`
+- `~/.claude/skills/weread-cli/SKILL.md`
+
+重复执行 `skills install`（或别名 `skills update`）会安装与当前 CLI 相配的版本，保留目录内其他文件。skill 的版本跟随 CLI 版本，检查时同时比对实际内容，能发现缺失、旧版或被修改的副本。安装不会修改 Codex/Claude 的其他配置，也不依赖腾讯官方 skill 已安装。
+
+`status` 默认在线验证登录态、查询 GitHub 最新正式 Release，并检查两处本地 skill；`login` 成功时也做 CLI/skill 检查。有问题时 stderr 和 JSON 的 `guidance[].command` 都会输出对应命令，例如：
+
+```sh
+go install github.com/songquanpeng/weread-cli/cmd/weread-cli@latest
+weread-cli skills install
+weread-cli login
+weread-cli sync --json
+```
+
+需要同时升级 CLI 和 skill 时先更新二进制，再运行 `skills install`。版本检查不发送微信读书 key，每次最多等待 5 秒；GitHub 不可用时 `cli.state` 为 `unknown`，不冒充已是最新版本。CLI 不自动执行升级命令。
+
+完全离线检查使用 `weread-cli status --offline --json`，其中登录态为 `unverified`（仅表示本地存在 key），版本状态为 `offline`，仍检查本地 skill。`status` 保留已有字段，并增加 `authentication`、`cli`、`skills`、`guidance`。
+
+skill 和 `agent-guide` 都要求 Agent 在首次使用或需要最新数据时**先运行 `sync` 再查询**，不把未同步的空索引当成远端没有笔记；离线分析时应告知缓存时间。首次未同步时，`status` 也会输出同步命令。定时任务不能保证刚发生的变化已同步。
 
 ## 离线搜索与分页
 
-`search`、`list`、`get`、`books`、`stats`、`status` 和 `export` 均不访问网络，也不需要有效 key。
+`search`、`list`、`get`、`books`、`stats`、`export`、`skills` 和 `status --offline` 均不访问网络，也不需要有效 key。
 
 ```sh
 weread-cli search "深度学习" --limit 50 --json
@@ -150,7 +187,7 @@ weread-cli api /book/underlines --params '{"bookId":"<book-id>","chapterUid":1}'
 
 | 配置 | 说明 |
 | --- | --- |
-| `WEREAD_API_KEY` | 本次进程使用的 API Key，优先于本地保存值 |
+| `WEREAD_API_KEY` | 未保存 key 时的回退值；已保存的 key 优先 |
 | `--home` / `WEREAD_HOME` | 状态目录，默认系统用户配置目录下的 `weread-cli` |
 | `--db` / `WEREAD_DB` | 数据库路径，默认状态目录中的 `weread.db` |
 | `--timezone` | 日期和阅读周期时区，默认 `Asia/Shanghai` |

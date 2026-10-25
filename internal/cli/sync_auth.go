@@ -4,11 +4,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"strings"
 	"time"
 
+	"github.com/songquanpeng/weread-cli/internal/config"
 	"github.com/songquanpeng/weread-cli/internal/schedule"
 	"github.com/songquanpeng/weread-cli/internal/service"
 	"github.com/songquanpeng/weread-cli/internal/weread"
@@ -17,39 +17,68 @@ import (
 
 func (r *runtime) login() *cobra.Command {
 	var stdin bool
-	c := &cobra.Command{Use: "login", Short: "Validate and privately save an API key from env or stdin", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
-		key := strings.TrimSpace(os.Getenv("WEREAD_API_KEY"))
-		if stdin {
-			b, e := io.ReadAll(io.LimitReader(r.in, 8193))
-			if e != nil {
-				return e
-			}
-			if len(b) > 8192 {
-				return errors.New("API key input too long")
-			}
-			key = strings.TrimSpace(string(b))
-		}
-		if key == "" || strings.ContainsAny(key, "\r\n\t ") {
-			return errors.New("set WEREAD_API_KEY or pipe a single key into weread-cli login --key-stdin")
-		}
-		client, e := weread.New(r.endpoint, key)
-		if e != nil {
-			return e
-		}
-		if _, e = client.Call(cmd.Context(), "/user/notebooks", map[string]any{"count": 1}); e != nil {
-			return e
-		}
+	c := &cobra.Command{Use: "login", Short: "Check your saved login, or paste and privately save a new API key", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
 		cfg, e := r.cfg()
 		if e != nil {
 			return e
 		}
+		key := ""
+		if !stdin {
+			key, _, e = cfg.Key()
+			if e != nil && !errors.Is(e, config.ErrInvalidCredentials) {
+				return e
+			}
+			if key != "" && !strings.ContainsAny(key, "\r\n\t ") {
+				e = r.validateKey(cmd, key)
+				var rejected *weread.AuthenticationError
+				if e != nil && !errors.As(e, &rejected) {
+					return e
+				}
+				if e != nil {
+					key = ""
+				}
+			}
+		}
+		if stdin || key == "" || strings.ContainsAny(key, "\r\n\t ") {
+			if !stdin {
+				fmt.Fprintln(r.errOut, "没有有效登录态，请打开以下页面获取 API Key：\nhttps://weread.qq.com/r/weread-skills")
+				fmt.Fprint(r.errOut, "请粘贴 API Key（终端输入不回显）： ")
+			}
+			key, e = r.readLoginKey(stdin)
+			if e != nil {
+				return e
+			}
+			if e = r.validateKey(cmd, key); e != nil {
+				return fmt.Errorf("%w; 获取新的 API Key：https://weread.qq.com/r/weread-skills", e)
+			}
+		}
 		if e = cfg.SaveKey(key); e != nil {
 			return e
 		}
-		return r.present(map[string]any{"authenticated": true, "credential_source": "file", "auth_path": cfg.AuthPath()})
+		h, e := r.health(cmd.Context(), false)
+		if e != nil {
+			return e
+		}
+		r.hint(h.Guidance)
+		return r.present(struct {
+			Authenticated    bool              `json:"authenticated"`
+			CredentialSource string            `json:"credential_source"`
+			AuthPath         string            `json:"auth_path"`
+			Next             map[string]string `json:"next"`
+			health
+		}{true, "file", cfg.AuthPath(), map[string]string{"command": "weread-cli sync --json"}, h})
 	}}
-	c.Flags().BoolVar(&stdin, "key-stdin", false, "read API key from stdin instead of the environment")
+	c.Flags().BoolVar(&stdin, "key-stdin", false, "validate and replace the saved API key using stdin")
 	return c
+}
+
+func (r *runtime) validateKey(cmd *cobra.Command, key string) error {
+	client, e := weread.New(r.endpoint, key)
+	if e != nil {
+		return e
+	}
+	_, e = client.Call(cmd.Context(), "/user/notebooks", map[string]any{"count": 1})
+	return e
 }
 
 func (r *runtime) logout() *cobra.Command {
